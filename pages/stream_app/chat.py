@@ -56,14 +56,39 @@ def build_context(notebook_id):
 
 def execute_chat(txt_input, context, current_session):
     current_state = st.session_state[current_session.id]
-    current_state["messages"] += [txt_input]
-    current_state["context"] = context
-    result = chat_graph.invoke(
-        input=current_state,
-        config=RunnableConfig(configurable={"thread_id": current_session.id}),
-    )
-    current_session.save()
-    return result
+
+    # Store original messages for rollback on error
+    original_messages = current_state["messages"].copy()
+
+    try:
+        current_state["messages"] += [txt_input]
+        current_state["context"] = context
+        result = chat_graph.invoke(
+            input=current_state,
+            config=RunnableConfig(configurable={"thread_id": current_session.id}),
+        )
+        current_session.save()
+        return result
+    except Exception as e:
+        # Rollback message addition on error
+        current_state["messages"] = original_messages
+        logger.error(f"Chat execution failed: {type(e).__name__}: {str(e)}")
+
+        # Re-raise with user-friendly message
+        error_msg = str(e)
+        if "context_length_exceeded" in error_msg.lower() or "too long" in error_msg.lower():
+            raise RuntimeError(
+                f"Context too large ({len(str(context))} chars). "
+                "Please reduce the number of sources or notes in your context."
+            ) from e
+        elif "model" in error_msg.lower() and "not found" in error_msg.lower():
+            raise RuntimeError(
+                f"Model not available. Please check your model configuration in Settings."
+            ) from e
+        else:
+            raise RuntimeError(
+                f"Failed to send message: {type(e).__name__}: {str(e)[:100]}"
+            ) from e
 
 
 def chat_sidebar(current_notebook: Notebook, current_session: ChatSession):
@@ -213,12 +238,25 @@ def chat_sidebar(current_notebook: Notebook, current_session: ChatSession):
             request = st.chat_input("Enter your question")
             # removing for now since it's not multi-model capable right now
             if request:
-                response = execute_chat(
-                    txt_input=request,
-                    context=context,
-                    current_session=current_session,
-                )
-                st.session_state[current_session.id]["messages"] = response["messages"]
+                # Prevent duplicate processing by checking if this request was already processed
+                last_request_key = f"{current_session.id}_last_request"
+                if last_request_key not in st.session_state:
+                    st.session_state[last_request_key] = None
+
+                # Only process if this is a new request
+                if st.session_state[last_request_key] != request:
+                    st.session_state[last_request_key] = request
+                    try:
+                        response = execute_chat(
+                            txt_input=request,
+                            context=context,
+                            current_session=current_session,
+                        )
+                        st.session_state[current_session.id]["messages"] = response["messages"]
+                    except Exception as e:
+                        # Display error to user
+                        st.error(f"❌ {str(e)}")
+                        logger.error(f"Chat error displayed to user: {e}")
 
             for msg in st.session_state[current_session.id]["messages"][::-1]:
                 if msg.type not in ["human", "ai"]:

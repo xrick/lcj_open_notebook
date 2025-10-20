@@ -1,4 +1,4 @@
-# scripts/stop_system.sh
+# stop_system.sh
 #!/bin/bash
 
 # Open Notebook System Shutdown Script

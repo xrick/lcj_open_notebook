@@ -1,4 +1,4 @@
-# scripts/start_system.sh
+# start_system.sh
 #!/bin/bash
 
 # Open Notebook System Startup Script
