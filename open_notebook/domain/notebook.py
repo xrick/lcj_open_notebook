@@ -179,6 +179,11 @@ class Source(ObjectModel):
             raise DatabaseOperationError(f"Failed to count chunks for source: {str(e)}")
 
     async def get_insights(self) -> List[SourceInsight]:
+        """
+        Fetch insights for this source.
+        Returns empty list on failure instead of raising exception to allow
+        source to be used even when insights are unavailable.
+        """
         try:
             result = await repo_query(
                 """
@@ -186,11 +191,25 @@ class Source(ObjectModel):
                 """,
                 {"id": ensure_record_id(self.id)},
             )
-            return [SourceInsight(**insight) for insight in result]
+
+            # Process insights individually to handle validation errors gracefully
+            insights = []
+            for insight_data in result:
+                try:
+                    insights.append(SourceInsight(**insight_data))
+                except Exception as validation_error:
+                    logger.warning(
+                        f"Skipping invalid insight for source {self.id}: {str(validation_error)}"
+                    )
+                    continue
+
+            return insights
+
         except Exception as e:
             logger.error(f"Error fetching insights for source {self.id}: {str(e)}")
             logger.exception(e)
-            raise DatabaseOperationError("Failed to fetch insights for source")
+            # Return empty list instead of raising - allows source to be used without insights
+            return []
 
     async def add_to_notebook(self, notebook_id: str) -> Any:
         if not notebook_id:
